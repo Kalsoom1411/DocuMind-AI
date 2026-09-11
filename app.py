@@ -18,67 +18,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom High-Contrast Professional Styling
-st.markdown("""
-<style>
-    /* Main Background */
-    .stApp {
-        background-color: #0F172A;
-        color: #F8FAFC;
-    }
-
-    /* Main Container Padding */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-        max-width: 800px;
-    }
-
-    /* Titles */
-    .title-text {
-        font-size: 2.2rem;
-        font-weight: 800;
-        color: #38BDF8;
-        text-align: center;
-        margin-bottom: 0.2rem;
-    }
-    
-    .subtitle-text {
-        font-size: 1rem;
-        color: #94A3B8;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-
-    /* Stat Cards */
-    .stat-card {
-        background-color: #1E293B;
-        border: 1px solid #334155;
-        border-radius: 10px;
-        padding: 15px;
-        text-align: center;
-    }
-    .stat-num {
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: #38BDF8;
-    }
-    .stat-lbl {
-        font-size: 0.85rem;
-        color: #94A3B8;
-    }
-
-    /* Fix Input Visibility */
-    .stTextInput input, .stSelectbox select {
-        background-color: #1E293B !important;
-        color: #FFFFFF !important;
-        border: 1px solid #475569 !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # ---------------------------------------------------------
-# Caching Functions
+# Caching & Document Processing Functions
 # ---------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
@@ -125,19 +66,19 @@ embeddings_model = load_embedding_model()
 # Sidebar
 # ---------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ⚙️ Credentials & Settings")
+    st.title("⚙️ Configuration")
     
     groq_api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
     if not groq_api_key:
         groq_api_key = st.text_input("Groq API Key", type="password", help="Enter your GSK API key")
     else:
-        st.success("API Key Loaded", icon="🔒")
+        st.success("Groq API Key Detected", icon="🔒")
 
     st.divider()
 
     with st.expander("🛠️ Advanced Settings"):
         selected_model = st.selectbox(
-            "Select Model",
+            "LLM Model",
             options=[
                 "llama-3.3-70b-versatile",
                 "openai/gpt-oss-120b",
@@ -147,50 +88,48 @@ with st.sidebar:
             index=0
         )
 
-    if st.button("Reset Chat"):
+    if st.button("Clear Chat", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
 
 # ---------------------------------------------------------
 # Main UI
 # ---------------------------------------------------------
-st.markdown('<div class="title-text">📄 DocuMind AI</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle-text">Upload your PDF document below to ask questions and extract insights</div>', unsafe_allow_html=True)
+st.title("📄 DocuMind AI")
+st.caption("Upload your PDF document to perform semantic vector search and get instant answers.")
 
-# Prominent Center Upload Section
-uploaded_file = st.file_uploader("Select or Drag & Drop PDF Document", type=["pdf"])
+# Main Upload Area
+uploaded_file = st.file_uploader("Upload PDF Document", type=["pdf"])
 
 if uploaded_file and (st.session_state.processed_doc_name != uploaded_file.name):
-    with st.spinner("Extracting text and generating vector index..."):
+    with st.spinner("Processing PDF and generating vector embeddings..."):
         try:
             v_db, total_pages, total_chunks = process_pdf(uploaded_file, embeddings_model)
             st.session_state.vector_db = v_db
             st.session_state.processed_doc_name = uploaded_file.name
             st.session_state.doc_stats = {"pages": total_pages, "chunks": total_chunks}
-            st.success(f"Successfully loaded: **{uploaded_file.name}**")
+            st.success(f"Successfully processed: {uploaded_file.name}")
         except Exception as e:
-            st.error(f"Error reading PDF: {str(e)}")
+            st.error(f"Error processing PDF: {str(e)}")
 
-# Dashboard Summary
+# Display Metrics
 if st.session_state.vector_db:
     st.divider()
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f'<div class="stat-card"><div class="stat-num">{st.session_state.doc_stats["pages"]}</div><div class="stat-lbl">Total Pages</div></div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="stat-card"><div class="stat-num">{st.session_state.doc_stats["chunks"]}</div><div class="stat-lbl">Indexed Chunks</div></div>', unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    col1.metric("Total Pages", st.session_state.doc_stats["pages"])
+    col2.metric("Indexed Vector Chunks", st.session_state.doc_stats["chunks"])
     st.divider()
 
-# Chat Area
+# Chat Conversation Area
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-user_query = st.chat_input("Ask any question about your PDF...")
+user_query = st.chat_input("Ask a question about your uploaded document...")
 
 if user_query:
     if not groq_api_key:
-        st.error("Please add your Groq API Key in the sidebar first.")
+        st.error("Please set your Groq API Key in the sidebar.")
         st.stop()
         
     if not st.session_state.vector_db:
@@ -202,14 +141,14 @@ if user_query:
         st.markdown(user_query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching document & answering..."):
+        with st.spinner("Searching document..."):
             docs = st.session_state.vector_db.similarity_search(user_query, k=4)
             context = "\n\n---\n\n".join([doc.page_content for doc in docs])
 
             system_prompt = (
                 "You are an assistant for question answering tasks. "
-                "Use the following pieces of retrieved context to answer the question. "
-                "If you don't know the answer, say that you don't know.\n\n"
+                "Use the following retrieved context to answer the question accurately. "
+                "If the answer is not in the context, state that you cannot find it in the document.\n\n"
                 f"CONTEXT:\n{context}"
             )
 
