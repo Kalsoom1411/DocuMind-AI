@@ -1,4 +1,5 @@
 import os
+import time
 import tempfile
 import streamlit as st
 
@@ -12,11 +13,14 @@ from langchain_community.vectorstores import FAISS
 # Page Configuration
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="DocuMind AI | PDF Assistant",
-    page_icon="📄",
+    page_title="DocuMind AI | Advanced PDF RAG",
+    page_icon="⚡",
     layout="centered",
     initial_sidebar_state="expanded"
 )
+
+# Hardcoded Model
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 # ---------------------------------------------------------
 # Caching & Document Processing Functions
@@ -37,6 +41,7 @@ def process_pdf(uploaded_file, embeddings_model):
         loader = PyPDFLoader(tmp_path)
         docs = loader.load()
 
+        # Text Splitting with Metadata Preservation (Page Numbers)
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
@@ -59,36 +64,38 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "processed_doc_name" not in st.session_state:
     st.session_state.processed_doc_name = None
+if "preset_query" not in st.session_state:
+    st.session_state.preset_query = None
 
 embeddings_model = load_embedding_model()
 
 # ---------------------------------------------------------
-# Sidebar
+# Sidebar (Analytics & Export)
 # ---------------------------------------------------------
 with st.sidebar:
-    st.title("⚙️ Configuration")
+    st.title("⚙️ Workspace")
     
     groq_api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
     if not groq_api_key:
         groq_api_key = st.text_input("Groq API Key", type="password", help="Enter your GSK API key")
     else:
-        st.success("Groq API Key Detected", icon="🔒")
+        st.success("Groq API Active", icon="🔒")
 
     st.divider()
 
-    with st.expander("🛠️ Advanced Settings"):
-        selected_model = st.selectbox(
-            "LLM Model",
-            options=[
-                "llama-3.3-70b-versatile",
-                "openai/gpt-oss-120b",
-                "llama-3.1-8b-instant",
-                "qwen/qwen3-32b"
-            ],
-            index=0
+    # Chat Export Option
+    if st.session_state.chat_history:
+        st.markdown("### 📥 Export Conversation")
+        formatted_chat = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.chat_history])
+        st.download_button(
+            label="Download Chat (.txt)",
+            data=formatted_chat,
+            file_name="documind_chat_history.txt",
+            mime="text/plain",
+            use_container_width=True
         )
 
-    if st.button("Clear Chat", use_container_width=True):
+    if st.button("Clear Conversation", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
 
@@ -96,9 +103,9 @@ with st.sidebar:
 # Main UI
 # ---------------------------------------------------------
 st.title("📄 DocuMind AI")
-st.caption("Upload your PDF document to perform semantic vector search and get instant answers.")
+st.caption("Upload your PDF to enable fast semantic search, citation metadata, and real-time streaming answers.")
 
-# Main Upload Area
+# Upload Container
 uploaded_file = st.file_uploader("Upload PDF Document", type=["pdf"])
 
 if uploaded_file and (st.session_state.processed_doc_name != uploaded_file.name):
@@ -112,22 +119,36 @@ if uploaded_file and (st.session_state.processed_doc_name != uploaded_file.name)
         except Exception as e:
             st.error(f"Error processing PDF: {str(e)}")
 
-# Display Metrics
+# Dashboard Summary & Quick Actions
 if st.session_state.vector_db:
     st.divider()
     col1, col2 = st.columns(2)
     col1.metric("Total Pages", st.session_state.doc_stats["pages"])
-    col2.metric("Indexed Vector Chunks", st.session_state.doc_stats["chunks"])
+    col2.metric("Indexed Chunks", st.session_state.doc_stats["chunks"])
+    
+    st.markdown("**💡 Quick Prompt Suggestions:**")
+    q_col1, q_col2, q_col3 = st.columns(3)
+    if q_col1.button("📋 Summarize Document", use_container_width=True):
+        st.session_state.preset_query = "Provide a comprehensive summary of this entire document with bullet points."
+    if q_col2.button("🔑 Key Takeaways", use_container_width=True):
+        st.session_state.preset_query = "What are the top 5 key takeaways or main findings in this document?"
+    if q_col3.button("❓ Important Questions", use_container_width=True):
+        st.session_state.preset_query = "What are 3 important questions answered by this document?"
     st.divider()
 
-# Chat Conversation Area
+# Display Chat Conversation
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-user_query = st.chat_input("Ask a question about your uploaded document...")
+# Handle preset queries from buttons or manual text input
+user_input = st.chat_input("Ask a question about your document...")
+active_query = st.session_state.preset_query or user_input
 
-if user_query:
+if active_query:
+    # Reset preset state
+    st.session_state.preset_query = None
+
     if not groq_api_key:
         st.error("Please set your Groq API Key in the sidebar.")
         st.stop()
@@ -136,41 +157,70 @@ if user_query:
         st.warning("Please upload a PDF document first.")
         st.stop()
 
-    st.session_state.chat_history.append({"role": "user", "content": user_query})
+    st.session_state.chat_history.append({"role": "user", "content": active_query})
     with st.chat_message("user"):
-        st.markdown(user_query)
+        st.markdown(active_query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching document..."):
-            docs = st.session_state.vector_db.similarity_search(user_query, k=4)
-            context = "\n\n---\n\n".join([doc.page_content for doc in docs])
+        # 1. Vector Search
+        docs = st.session_state.vector_db.similarity_search(active_query, k=4)
+        
+        # Build Context with Page Numbers
+        context_blocks = []
+        for doc in docs:
+            page_num = doc.metadata.get("page", 0) + 1
+            context_blocks.append(f"[Source Page {page_num}]:\n{doc.page_content}")
+        context = "\n\n---\n\n".join(context_blocks)
 
-            system_prompt = (
-                "You are an assistant for question answering tasks. "
-                "Use the following retrieved context to answer the question accurately. "
-                "If the answer is not in the context, state that you cannot find it in the document.\n\n"
-                f"CONTEXT:\n{context}"
+        system_prompt = (
+            "You are an expert document assistant. "
+            "Use the provided context chunks below to answer the user's question. "
+            "If the answer is not present in the context, explicitly state that the information is not in the document.\n\n"
+            f"CONTEXT FROM PDF:\n{context}"
+        )
+
+        try:
+            client = Groq(api_key=groq_api_key)
+            
+            # Measure Latency
+            start_time = time.time()
+            
+            # 2. Streaming Completion Call
+            stream = client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": active_query}
+                ],
+                temperature=0.2,
+                stream=True
             )
 
-            try:
-                client = Groq(api_key=groq_api_key)
-                response = client.chat.completions.create(
-                    model=selected_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_query}
-                    ],
-                    temperature=0.2,
-                )
-                
-                answer = response.choices[0].message.content
-                st.markdown(answer)
-                
-                with st.expander("🔍 View Context Sources"):
-                    for idx, doc in enumerate(docs):
-                        st.caption(f"**Chunk {idx+1}:** {doc.page_content[:250]}...")
+            # 3. Dynamic Token Stream Rendering
+            response_container = st.empty()
+            full_response = ""
+            
+            for chunk in stream:
+                content = chunk.choices[0].delta.content or ""
+                full_response += content
+                response_container.markdown(full_response + "▌")
+            
+            response_container.markdown(full_response)
+            
+            end_time = time.time()
+            elapsed_time = round(end_time - start_time, 2)
 
-                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            # Display Performance Metric
+            st.caption(f"⚡ *Response generated in {elapsed_time}s using {DEFAULT_MODEL}*")
 
-            except Exception as e:
-                st.error(f"Groq API Error: {str(e)}")
+            # 4. Citations & Sources Expander
+            with st.expander("🔍 View Context Sources & Page Citations"):
+                for idx, doc in enumerate(docs):
+                    page_num = doc.metadata.get("page", 0) + 1
+                    st.markdown(f"**Chunk {idx+1} (Page {page_num}):**")
+                    st.caption(f"{doc.page_content[:300]}...")
+
+            st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+
+        except Exception as e:
+            st.error(f"Groq API Error: {str(e)}")
