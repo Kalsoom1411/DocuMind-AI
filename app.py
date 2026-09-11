@@ -86,7 +86,7 @@ st.markdown("""
         color: #8B949E;
     }
 </style>
-""", unsafe_allow_html=unsafe_allow_html_closing)
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # Caching Functions (Optimized Processing)
